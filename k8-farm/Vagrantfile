@@ -1,0 +1,84 @@
+# Vagrantfile
+VAGRANTFILE_API_VERSION = "2"
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  # Define common configuration for all machines
+  config.vm.box = "ubuntu/ubuntu-24.04"  # Ubuntu 24.04 (hypothetical box; replace if not available)
+  config.ssh.insert_key = false           # Optional, to speed up provisioning
+
+  # Base setup script for Kubernetes
+  base_script = <<-SHELL
+    # Basic setup
+    sudo apt-get update
+    sudo apt-get install -y apt-transport-https ca-certificates curl
+
+    # Install Docker
+    sudo apt-get install -y docker.io
+    sudo systemctl enable docker && sudo systemctl start docker
+
+    # Add Kubernetes repository
+    sudo curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+    sudo apt-get update
+
+    # Install kubelet, kubeadm, and kubectl
+    sudo apt-get install -y kubelet kubeadm kubectl
+    sudo apt-mark hold kubelet kubeadm kubectl  # Prevent accidental upgrades
+
+    # Kubernetes prerequisites
+    sudo swapoff -a  # Disable swap (Kubernetes requires swap to be disabled)
+    sudo modprobe overlay
+    sudo modprobe br_netfilter
+    echo "br_netfilter" | sudo tee -a /etc/modules
+    echo "overlay" | sudo tee -a /etc/modules
+
+    # Configure sysctl for Kubernetes networking
+    sudo tee /etc/sysctl.d/k8s.conf <<EOF
+    net.bridge.bridge-nf-call-ip6tables = 1
+    net.bridge.bridge-nf-call-iptables = 1
+    EOF
+    sudo sysctl --system
+  SHELL
+
+  # Control Plane Node
+  config.vm.define "k8s-master" do |master|
+    master.vm.hostname = "k8s-master"
+    master.vm.network "private_network", ip: "192.168.56.10"
+    master.vm.provider "virtualbox" do |vb|
+      vb.memory = "4096"
+      vb.cpus = 2
+    end
+    master.vm.provision "shell", inline: base_script
+    master.vm.provision "shell", inline: <<-SHELL
+      # Initialize Kubernetes on the master node
+      sudo kubeadm init --apiserver-advertise-address=192.168.56.10 --pod-network-cidr=10.244.0.0/16
+
+      # Set up kubeconfig for the vagrant user
+      mkdir -p $HOME/.kube
+      sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+      sudo chown $(id -u):$(id -g) $HOME/.kube/config
+    SHELL
+  end
+
+  # Worker Node 1
+  config.vm.define "k8s-worker-1" do |worker1|
+    worker1.vm.hostname = "k8s-worker-1"
+    worker1.vm.network "private_network", ip: "192.168.56.11"
+    worker1.vm.provider "virtualbox" do |vb|
+      vb.memory = "2048"
+      vb.cpus = 2
+    end
+    worker1.vm.provision "shell", inline: base_script
+  end
+
+  # Worker Node 2
+  config.vm.define "k8s-worker-2" do |worker2|
+    worker2.vm.hostname = "k8s-worker-2"
+    worker2.vm.network "private_network", ip: "192.168.56.12"
+    worker2.vm.provider "virtualbox" do |vb|
+      vb.memory = "2048"
+      vb.cpus = 2
+    end
+    worker2.vm.provision "shell", inline: base_script
+  end
+end
